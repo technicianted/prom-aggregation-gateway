@@ -25,8 +25,6 @@ steps:
   displayName: Build and push docker image
   inputs: 
     command: buildAndPush
-    dockerfile: 'cmd/prom-aggregation-gateway/Dockerfile'
-    buildContext: 'cmd/prom-aggregation-gateway/'
     repository: $(DockerRepository)
     tags: |
       $(tag)
