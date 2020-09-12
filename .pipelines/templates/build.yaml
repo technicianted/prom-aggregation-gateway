@@ -10,6 +10,5 @@ steps:
     mkdir bin/
     cd cmd/prom-aggregation-gateway
     go build -o prom-aggregation-gateway
-  workingDirectory: '$(modulePath)'
   displayName: 'Get dependencies, then build'
 
