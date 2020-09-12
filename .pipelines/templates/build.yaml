@@ -1,7 +1,7 @@
 # build and test
 
 steps:
-  - task: GoTool@0
+- task: GoTool@0
   inputs:
     version: '1.13.5'
 
