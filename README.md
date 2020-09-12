@@ -7,6 +7,10 @@ Prometheus Aggregation Gateway is a aggregating push gateway for Prometheus.  As
 * Gauges are also added up (but this may not make any sense)
 * Summaries are discarded.
 
+## Understanding jobs
+
+In order to support the scenario where a single source may push its metrics multiple times, a change is made to allow the aggregation server to distinguish sources by job. This way, pushes from the same `job` value are treated as updates and are overwritten. However when scraping is performed, all metrics from all jobs are then aggregated.
+
 ## How to use
 
 Send metrics in [Prometheus format](https://prometheus.io/docs/instrumenting/exposition_formats/) to `/metrics/`
@@ -30,6 +34,10 @@ push_to_gateway('localhost', job='my_job_name', registry=registry)
 ```
 
 Then have your Prometheus scrape metrics at `/metrics`.
+
+To enable the job awareness (disabled by default):
+* Enable by-job option in command line `-by-job`.
+* Send metrics with `/metrics/job/<job>` URL path, where `job` is a unique identifier of the source.
 
 ## Ready-built images
 

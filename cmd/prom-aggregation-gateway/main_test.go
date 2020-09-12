@@ -118,6 +118,14 @@ ui_external_lib_loaded{loaded="true",name="Intercom"} 2
 ui_external_lib_loaded{loaded="true",name="ga"} 2
 ui_external_lib_loaded{loaded="true",name="mixpanel"} 2
 `
+
+	gaugeOutput2 = `# HELP ui_external_lib_loaded A gauge with entries in un-sorted order
+# TYPE ui_external_lib_loaded gauge
+ui_external_lib_loaded{loaded="true",name="Intercom"} 1
+ui_external_lib_loaded{loaded="true",name="ga"} 1
+ui_external_lib_loaded{loaded="true",name="mixpanel"} 1
+`
+
 	duplicateLabels = `
 # HELP ui_external_lib_loaded Test with duplicate values
 # TYPE ui_external_lib_loaded gauge
@@ -142,28 +150,37 @@ counter{a="a",b="b"} 3
 
 func TestAggate(t *testing.T) {
 	for _, c := range []struct {
-		a, b string
-		want string
-		err1 error
-		err2 error
+		byJob bool
+		a     string
+		aJob  string
+		b     string
+		bJob  string
+		want  string
+		err1  error
+		err2  error
 	}{
-		{gaugeInput, gaugeInput, gaugeOutput, nil, nil},
-		{in1, in2, want, nil, nil},
-		{multilabel1, multilabel2, multilabelResult, nil, nil},
-		{labelFields1, labelFields2, labelFieldResult, nil, nil},
-		{duplicateLabels, "", "", fmt.Errorf("%s", duplicateError), nil},
-		{reorderedLabels1, reorderedLabels2, reorderedLabelsResult, nil, nil},
-	} {
-		a := newAggate()
+		{false, gaugeInput, "j1", gaugeInput, "j1", gaugeOutput, nil, nil},
+		// enable byJob, same input jobs will overwrite
+		{true, gaugeInput, "j1", gaugeInput, "j1", gaugeOutput2, nil, nil},
+		// enable byJob, different jobs will aggregate to same output
+		{true, gaugeInput, "j1", gaugeInput, "j2", gaugeOutput, nil, nil},
 
-		if err := a.parseAndMerge(strings.NewReader(c.a)); err != nil {
+		{false, in1, "j1", in2, "j1", want, nil, nil},
+		{false, multilabel1, "j1", multilabel2, "j1", multilabelResult, nil, nil},
+		{false, labelFields1, "j1", labelFields2, "j1", labelFieldResult, nil, nil},
+		{false, duplicateLabels, "j1", "", "j1", "", fmt.Errorf("%s", duplicateError), nil},
+		{false, reorderedLabels1, "j1", reorderedLabels2, "j1", reorderedLabelsResult, nil, nil},
+	} {
+		a := newAggate(c.byJob)
+
+		if err := a.parseAndMerge(c.aJob, strings.NewReader(c.a)); err != nil {
 			if c.err1 == nil {
 				t.Fatalf("Unexpected error: %s", err)
 			} else if c.err1.Error() != err.Error() {
 				t.Fatalf("Expected %s, got %s", c.err1, err)
 			}
 		}
-		if err := a.parseAndMerge(strings.NewReader(c.b)); err != c.err2 {
+		if err := a.parseAndMerge(c.bJob, strings.NewReader(c.b)); err != c.err2 {
 			t.Fatalf("Expected %s, got %s", c.err2, err)
 		}
 

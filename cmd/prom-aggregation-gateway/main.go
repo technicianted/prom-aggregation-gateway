@@ -6,7 +6,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	dto "github.com/prometheus/client_model/go"
@@ -125,7 +127,7 @@ func mergeMetric(ty dto.MetricType, a, b *dto.Metric) *dto.Metric {
 	return nil
 }
 
-func mergeFamily(a, b *dto.MetricFamily) (*dto.MetricFamily, error) {
+func mergeFamily(a, b *dto.MetricFamily, overwrite bool) (*dto.MetricFamily, error) {
 	if *a.Type != *b.Type {
 		return nil, fmt.Errorf("Cannot merge metric '%s': type %s != %s",
 			*a.Name, a.Type.String(), b.Type.String())
@@ -146,9 +148,13 @@ func mergeFamily(a, b *dto.MetricFamily) (*dto.MetricFamily, error) {
 			output.Metric = append(output.Metric, b.Metric[j])
 			j++
 		} else {
-			merged := mergeMetric(*a.Type, a.Metric[i], b.Metric[j])
-			if merged != nil {
-				output.Metric = append(output.Metric, merged)
+			if overwrite {
+				output.Metric = append(output.Metric, b.Metric[j])
+			} else {
+				merged := mergeMetric(*a.Type, a.Metric[i], b.Metric[j])
+				if merged != nil {
+					output.Metric = append(output.Metric, merged)
+				}
 			}
 			i++
 			j++
@@ -164,13 +170,16 @@ func mergeFamily(a, b *dto.MetricFamily) (*dto.MetricFamily, error) {
 }
 
 type aggate struct {
+	byJob        bool
 	familiesLock sync.RWMutex
-	families     map[string]*dto.MetricFamily
+	// families by job
+	families map[string]map[string]*dto.MetricFamily
 }
 
-func newAggate() *aggate {
+func newAggate(byJob bool) *aggate {
 	return &aggate{
-		families: map[string]*dto.MetricFamily{},
+		byJob:    byJob,
+		families: map[string]map[string]*dto.MetricFamily{},
 	}
 }
 
@@ -196,7 +205,7 @@ func validateFamily(f *dto.MetricFamily) error {
 	return nil
 }
 
-func (a *aggate) parseAndMerge(r io.Reader) error {
+func (a *aggate) parseAndMerge(job string, r io.Reader) error {
 	var parser expfmt.TextParser
 	inFamilies, err := parser.TextToMetricFamilies(r)
 	if err != nil {
@@ -218,18 +227,21 @@ func (a *aggate) parseAndMerge(r io.Reader) error {
 		// family must be sorted for the merge
 		sort.Sort(byLabel(family.Metric))
 
-		existingFamily, ok := a.families[name]
+		if _, ok := a.families[job]; !ok {
+			a.families[job] = make(map[string]*dto.MetricFamily)
+		}
+		existingFamily, ok := a.families[job][name]
 		if !ok {
-			a.families[name] = family
+			a.families[job][name] = family
 			continue
 		}
 
-		merged, err := mergeFamily(existingFamily, family)
+		merged, err := mergeFamily(existingFamily, family, a.byJob)
 		if err != nil {
 			return err
 		}
 
-		a.families[name] = merged
+		a.families[job][name] = merged
 	}
 
 	return nil
@@ -242,14 +254,34 @@ func (a *aggate) handler(w http.ResponseWriter, r *http.Request) {
 
 	a.familiesLock.RLock()
 	defer a.familiesLock.RUnlock()
+
+	mergedFamilies := make(map[string]*dto.MetricFamily)
+	for _, families := range a.families {
+		for name, family := range families {
+			existingFamily, ok := mergedFamilies[name]
+			if !ok {
+				mergedFamilies[name] = family
+				continue
+			}
+
+			merged, err := mergeFamily(existingFamily, family, false)
+			if err != nil {
+				http.Error(w, "An error has occurred during metrics merge:\n\n"+err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			mergedFamilies[name] = merged
+		}
+	}
+
 	metricNames := []string{}
-	for name := range a.families {
+	for name := range mergedFamilies {
 		metricNames = append(metricNames, name)
 	}
 	sort.Sort(sort.StringSlice(metricNames))
 
 	for _, name := range metricNames {
-		if err := enc.Encode(a.families[name]); err != nil {
+		if err := enc.Encode(mergedFamilies[name]); err != nil {
 			http.Error(w, "An error has occurred during metrics encoding:\n\n"+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -262,13 +294,34 @@ func main() {
 	listen := flag.String("listen", ":80", "Address and port to listen on.")
 	cors := flag.String("cors", "*", "The 'Access-Control-Allow-Origin' value to be returned.")
 	pushPath := flag.String("push-path", "/metrics/", "HTTP path to accept pushed metrics.")
+	byJob := flag.Bool("by-job", false, "Aggregate metrics by job")
 	flag.Parse()
 
-	a := newAggate()
+	a := newAggate(*byJob)
 	http.HandleFunc("/metrics", a.handler)
 	http.HandleFunc(*pushPath, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", *cors)
-		if err := a.parseAndMerge(r.Body); err != nil {
+
+		job := ""
+		if *byJob {
+			p, err := filepath.Rel(*pushPath, r.URL.Path)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("failed to parse URL path: %v", err.Error()), http.StatusBadRequest)
+				return
+			}
+			parts := strings.Split(p, "/")
+			if len(parts) < 2 {
+				http.Error(w, fmt.Sprintf("path is too short, expecting > 2"), http.StatusBadRequest)
+				return
+			}
+			if parts[0] != "job" {
+				http.Error(w, fmt.Sprintf("first path components != job: %v", parts[0]), http.StatusBadRequest)
+				return
+			}
+			job = parts[1]
+		}
+
+		if err := a.parseAndMerge(job, r.Body); err != nil {
 			log.Println(err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
