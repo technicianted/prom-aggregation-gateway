@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pmezard/go-difflib/difflib"
 )
@@ -62,6 +63,30 @@ counter 60
 # HELP gauge A gauge
 # TYPE gauge gauge
 gauge 99
+# HELP histogram A histogram
+# TYPE histogram histogram
+histogram_bucket{le="1"} 0
+histogram_bucket{le="2"} 0
+histogram_bucket{le="3"} 3
+histogram_bucket{le="4"} 8
+histogram_bucket{le="5"} 9
+histogram_bucket{le="6"} 9
+histogram_bucket{le="7"} 9
+histogram_bucket{le="8"} 9
+histogram_bucket{le="9"} 9
+histogram_bucket{le="10"} 9
+histogram_bucket{le="+Inf"} 9
+histogram_sum 7
+histogram_count 2
+`
+
+	// sample output when in1 goes through pruning
+	want2 = `# HELP counter A counter
+# TYPE counter counter
+counter 60
+# HELP gauge A gauge
+# TYPE gauge gauge
+gauge 57
 # HELP histogram A histogram
 # TYPE histogram histogram
 histogram_bucket{le="1"} 0
@@ -150,28 +175,32 @@ counter{a="a",b="b"} 3
 
 func TestAggate(t *testing.T) {
 	for _, c := range []struct {
-		byJob bool
-		a     string
-		aJob  string
-		b     string
-		bJob  string
-		want  string
-		err1  error
-		err2  error
+		byJob         bool
+		a             string
+		aJob          string
+		b             string
+		bJob          string
+		byJobDuration time.Duration
+		waitDuration  time.Duration
+		want          string
+		err1          error
+		err2          error
 	}{
-		{false, gaugeInput, "j1", gaugeInput, "j1", gaugeOutput, nil, nil},
+		{false, gaugeInput, "j1", gaugeInput, "j1", 1 * time.Minute, 0, gaugeOutput, nil, nil},
 		// enable byJob, same input jobs will overwrite
-		{true, gaugeInput, "j1", gaugeInput, "j1", gaugeOutput2, nil, nil},
+		{true, gaugeInput, "j1", gaugeInput, "j1", 1 * time.Minute, 0, gaugeOutput2, nil, nil},
 		// enable byJob, different jobs will aggregate to same output
-		{true, gaugeInput, "j1", gaugeInput, "j2", gaugeOutput, nil, nil},
+		{true, gaugeInput, "j1", gaugeInput, "j2", 1 * time.Minute, 0, gaugeOutput, nil, nil},
+		// enable byJob, enable pruning
+		{true, in1, "j1", in2, "j2", 5 * time.Millisecond, 10 * time.Millisecond, want2, nil, nil},
 
-		{false, in1, "j1", in2, "j1", want, nil, nil},
-		{false, multilabel1, "j1", multilabel2, "j1", multilabelResult, nil, nil},
-		{false, labelFields1, "j1", labelFields2, "j1", labelFieldResult, nil, nil},
-		{false, duplicateLabels, "j1", "", "j1", "", fmt.Errorf("%s", duplicateError), nil},
-		{false, reorderedLabels1, "j1", reorderedLabels2, "j1", reorderedLabelsResult, nil, nil},
+		{false, in1, "j1", in2, "j1", 1 * time.Minute, 0, want, nil, nil},
+		{false, multilabel1, "j1", multilabel2, "j1", 1 * time.Minute, 0, multilabelResult, nil, nil},
+		{false, labelFields1, "j1", labelFields2, "j1", 1 * time.Minute, 0, labelFieldResult, nil, nil},
+		{false, duplicateLabels, "j1", "", "j1", 1 * time.Minute, 0, "", fmt.Errorf("%s", duplicateError), nil},
+		{false, reorderedLabels1, "j1", reorderedLabels2, "j1", 1 * time.Minute, 0, reorderedLabelsResult, nil, nil},
 	} {
-		a := newAggate(c.byJob)
+		a := newAggate(c.byJob, c.byJobDuration)
 
 		if err := a.parseAndMerge(c.aJob, strings.NewReader(c.a)); err != nil {
 			if c.err1 == nil {
@@ -180,6 +209,9 @@ func TestAggate(t *testing.T) {
 				t.Fatalf("Expected %s, got %s", c.err1, err)
 			}
 		}
+
+		time.Sleep(c.waitDuration)
+
 		if err := a.parseAndMerge(c.bJob, strings.NewReader(c.b)); err != c.err2 {
 			t.Fatalf("Expected %s, got %s", c.err2, err)
 		}

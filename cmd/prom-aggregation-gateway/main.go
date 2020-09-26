@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
@@ -170,16 +171,22 @@ func mergeFamily(a, b *dto.MetricFamily, overwrite bool) (*dto.MetricFamily, err
 }
 
 type aggate struct {
-	byJob        bool
-	familiesLock sync.RWMutex
-	// families by job
-	families map[string]map[string]*dto.MetricFamily
+	byJob            bool
+	jobPruneDuration time.Duration
+	familiesLock     sync.RWMutex
+	familiesByJob    map[string]*jobFamily
 }
 
-func newAggate(byJob bool) *aggate {
+type jobFamily struct {
+	lastUpdate time.Time
+	families   map[string]*dto.MetricFamily
+}
+
+func newAggate(byJob bool, jobPruneDuration time.Duration) *aggate {
 	return &aggate{
-		byJob:    byJob,
-		families: map[string]map[string]*dto.MetricFamily{},
+		byJob:            byJob,
+		jobPruneDuration: jobPruneDuration,
+		familiesByJob:    map[string]*jobFamily{},
 	}
 }
 
@@ -227,12 +234,15 @@ func (a *aggate) parseAndMerge(job string, r io.Reader) error {
 		// family must be sorted for the merge
 		sort.Sort(byLabel(family.Metric))
 
-		if _, ok := a.families[job]; !ok {
-			a.families[job] = make(map[string]*dto.MetricFamily)
+		if _, ok := a.familiesByJob[job]; !ok {
+			a.familiesByJob[job] = &jobFamily{
+				lastUpdate: time.Now(),
+				families:   make(map[string]*dto.MetricFamily),
+			}
 		}
-		existingFamily, ok := a.families[job][name]
+		existingFamily, ok := a.familiesByJob[job].families[name]
 		if !ok {
-			a.families[job][name] = family
+			a.familiesByJob[job].families[name] = family
 			continue
 		}
 
@@ -241,10 +251,22 @@ func (a *aggate) parseAndMerge(job string, r io.Reader) error {
 			return err
 		}
 
-		a.families[job][name] = merged
+		a.familiesByJob[job].families[name] = merged
 	}
 
 	return nil
+}
+
+func (a *aggate) prune(job *jobFamily) {
+	prunedFamilies := make([]string, 0)
+	for name, family := range job.families {
+		if *family.Type == dto.MetricType_GAUGE {
+			prunedFamilies = append(prunedFamilies, name)
+		}
+	}
+	for _, name := range prunedFamilies {
+		delete(job.families, name)
+	}
 }
 
 func (a *aggate) handler(w http.ResponseWriter, r *http.Request) {
@@ -256,8 +278,12 @@ func (a *aggate) handler(w http.ResponseWriter, r *http.Request) {
 	defer a.familiesLock.RUnlock()
 
 	mergedFamilies := make(map[string]*dto.MetricFamily)
-	for _, families := range a.families {
-		for name, family := range families {
+	for _, job := range a.familiesByJob {
+		if time.Since(job.lastUpdate) > a.jobPruneDuration {
+			a.prune(job)
+		}
+
+		for name, family := range job.families {
 			existingFamily, ok := mergedFamilies[name]
 			if !ok {
 				mergedFamilies[name] = family
@@ -295,9 +321,10 @@ func main() {
 	cors := flag.String("cors", "*", "The 'Access-Control-Allow-Origin' value to be returned.")
 	pushPath := flag.String("push-path", "/metrics/", "HTTP path to accept pushed metrics.")
 	byJob := flag.Bool("by-job", false, "Aggregate metrics by job")
+	jobPruneDuration := flag.Duration("job-prune-duration", 90*time.Second, "Duration after which job metric families are pruned if it had not been updated")
 	flag.Parse()
 
-	a := newAggate(*byJob)
+	a := newAggate(*byJob, *jobPruneDuration)
 	http.HandleFunc("/metrics", a.handler)
 	http.HandleFunc(*pushPath, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", *cors)
