@@ -236,10 +236,10 @@ func (a *aggate) parseAndMerge(job string, r io.Reader) error {
 
 		if _, ok := a.familiesByJob[job]; !ok {
 			a.familiesByJob[job] = &jobFamily{
-				lastUpdate: time.Now(),
-				families:   make(map[string]*dto.MetricFamily),
+				families: make(map[string]*dto.MetricFamily),
 			}
 		}
+		a.familiesByJob[job].lastUpdate = time.Now()
 		existingFamily, ok := a.familiesByJob[job].families[name]
 		if !ok {
 			a.familiesByJob[job].families[name] = family
@@ -257,6 +257,8 @@ func (a *aggate) parseAndMerge(job string, r io.Reader) error {
 	return nil
 }
 
+// prune performs pruning of expired metrics.
+// the only case is to reset gauges.
 func (a *aggate) prune(job *jobFamily) {
 	prunedFamilies := make([]string, 0)
 	for name, family := range job.families {
@@ -278,8 +280,9 @@ func (a *aggate) handler(w http.ResponseWriter, r *http.Request) {
 	defer a.familiesLock.RUnlock()
 
 	mergedFamilies := make(map[string]*dto.MetricFamily)
-	for _, job := range a.familiesByJob {
+	for jobName, job := range a.familiesByJob {
 		if time.Since(job.lastUpdate) > a.jobPruneDuration {
+			fmt.Printf("PRUNING %v: %v, %v, %v\n", jobName, job.lastUpdate, a.jobPruneDuration, time.Since(job.lastUpdate))
 			a.prune(job)
 		}
 
@@ -312,8 +315,6 @@ func (a *aggate) handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
-	// TODO reset gauges
 }
 
 func main() {
