@@ -198,8 +198,6 @@ func TestAggate(t *testing.T) {
 		{false, duplicateLabels, "j1", "", "j1", 1 * time.Minute, 0, "", fmt.Errorf("%s", duplicateError), nil},
 		{false, reorderedLabels1, "j1", reorderedLabels2, "j1", 1 * time.Minute, 0, reorderedLabelsResult, nil, nil},
 	} {
-		fmt.Printf("case: %d\n", i)
-
 		a := newAggate(c.byJob, c.byJobDuration)
 
 		if err := a.parseAndMerge(c.aJob, strings.NewReader(c.a)); err != nil {

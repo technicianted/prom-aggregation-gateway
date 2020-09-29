@@ -280,9 +280,8 @@ func (a *aggate) handler(w http.ResponseWriter, r *http.Request) {
 	defer a.familiesLock.RUnlock()
 
 	mergedFamilies := make(map[string]*dto.MetricFamily)
-	for jobName, job := range a.familiesByJob {
+	for _, job := range a.familiesByJob {
 		if time.Since(job.lastUpdate) > a.jobPruneDuration {
-			fmt.Printf("PRUNING %v: %v, %v, %v\n", jobName, job.lastUpdate, a.jobPruneDuration, time.Since(job.lastUpdate))
 			a.prune(job)
 		}
 
