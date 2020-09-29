@@ -11,6 +11,10 @@ Prometheus Aggregation Gateway is a aggregating push gateway for Prometheus.  As
 
 In order to support the scenario where a single source may push its metrics multiple times, a change is made to allow the aggregation server to distinguish sources by job. This way, pushes from the same `job` value are treated as updates and are overwritten. However when scraping is performed, all metrics from all jobs are then aggregated.
 
+The only challenge is with gauges. When a source disappears and is no longer pushing metrics, gauge aggregation for its values becomes irrelevant and will not give proper results. To work around this, a timeout can be set on a job that if it has not been updated during that timeout, its gauges will be reset.
+
+The next section will explain how to use job aggregation.
+
 ## How to use
 
 Send metrics in [Prometheus format](https://prometheus.io/docs/instrumenting/exposition_formats/) to `/metrics/`
@@ -38,6 +42,7 @@ Then have your Prometheus scrape metrics at `/metrics`.
 To enable the job awareness (disabled by default):
 * Enable by-job option in command line `-by-job`.
 * Send metrics with `/metrics/job/<job>` URL path, where `job` is a unique identifier of the source.
+* To set gauge metrics reset expiry for dead jobs you can use `-job-prune-duration` to set the timeout duration.
 
 ## Ready-built images
 
